@@ -8,11 +8,10 @@ execute:
   message: false
 
 book:
-  title: "YOUR PROJECT TITLE"
+  title: "Decoding Distinct Mouse Behavior States During Exploration"
   author:
-    - AUTHOR1 (UNI1)
-    - AUTHOR2 (UNI2)
-  repo-url: https://github.com/YOUR_GITHUB_ACCOUNT/REPO_NAME
+    - NAZGUL MAKSUTKHAN (nm3663)
+  repo-url: https://github.com/nm3663-oss/MouseBehaviour.git
   date: today
   page-footer:
     right: |
