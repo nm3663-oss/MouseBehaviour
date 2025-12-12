@@ -1,1 +1,3 @@
 # Introduction
+
+This project explores movement patterns of freely behaving mice using pose-tracking data extracted from several behavioral videos. Each CSV file contains frame-wise coordinates and likelihood scores for multiple body parts tracked using DeepLabCut. Using these data, I examine basic motion characteristics such as movement, posture, and variability across recordings. This exploratory analysis focuses on descriptive visualization rather than modeling, with an emphasis on clarity and audience-ready graphics.

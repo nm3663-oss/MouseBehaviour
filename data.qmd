@@ -1,5 +1,178 @@
+---
+editor: 
+  markdown: 
+    wrap: 72
+---
+
 # Data
 
-## Description
+## Technical description
 
-## Missing value analysis
+The dataset consists of ten DeepLabCut pose-tracking CSV files. Each
+includes multiple tracked body parts (nose, ears, tail base, etc.) with
+three measurements per part: \*\*x\*\*, \*\*y\*\*, and
+\*\*likelihood\*\*. The first three rows of each CSV contain DeepLabCut
+header information (scorer, bodypart name, coordinate type). These rows
+are removed, and columns are rebuilt into the format
+
+```{r}
+
+library(tidyverse)
+
+# Load all CSV files
+files <- list.files("data", pattern = "\\.csv$", full.names = TRUE)
+
+load_pose <- function(path) {
+  
+  # Read entire CSV with NO column names
+  raw <- read_csv(path, col_names = FALSE, show_col_types = FALSE)
+  
+  # DeepLabCut stores headers in rows 1–3:
+  # Row 1 = scorer, Row 2 = bodypart, Row 3 = coordinate
+  header <- raw[1:3, ]
+  data <- raw[-c(1:3), ]
+  
+  # Build proper column names
+  bodyparts <- as.character(header[2, ])
+  coords <- as.character(header[3, ])
+  new_names <- paste0(bodyparts, "_", coords)
+  
+  colnames(data) <- new_names
+  
+  # Convert everything to numeric
+  data <- data %>% mutate(across(everything(), as.numeric))
+  
+  # Add metadata
+  data$video_id <- basename(path)
+  data$frame <- seq_len(nrow(data))
+  
+  data
+}
+
+pose_all <- map_df(files, load_pose)
+
+glimpse(pose_all)
+```
+
+```{r}
+library(tidyverse)
+
+# Raw DLC variables: end with _x, _y, _likelihood
+raw_vars <- names(pose_all) %>%
+  str_subset("_(x|y|likelihood)$")
+
+missing_by_vid_var <- pose_all %>%
+  group_by(video_id) %>%
+  summarize(
+    across(all_of(raw_vars), ~ mean(is.na(.))),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = -video_id,
+    names_to = "variable",
+    values_to = "prop_missing"
+  )
+
+ggplot(missing_by_vid_var,
+       aes(x = video_id, y = variable, fill = prop_missing)) +
+  geom_tile() +
+  geom_text(
+    aes(label = ifelse(prop_missing > 0,
+                       scales::percent(prop_missing, accuracy = 0.01),
+                       "")),
+    size = 3
+  ) +
+  scale_fill_viridis_c(labels = scales::percent,
+                       name = "Percent\nmissing") +
+  labs(
+    title = "Missingness by video and variable",
+    x = "Video file",
+    y = "Variable"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+library(tidyverse)
+
+# Use only the raw DeepLabCut variables (skip frame, video_id, dx, speed, cluster, etc.)
+raw_vars <- names(pose_all) %>%
+  str_subset("_(x|y|likelihood)$")
+
+zero_by_vid_var <- pose_all %>%
+  group_by(video_id) %>%
+  summarize(
+    across(all_of(raw_vars), ~ mean(. == 0, na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = -video_id,
+    names_to = "variable",
+    values_to = "prop_zero"
+  )
+
+ggplot(zero_by_vid_var,
+       aes(x = video_id, y = variable, fill = prop_zero)) +
+  geom_tile() +
+  geom_text(
+    aes(label = ifelse(prop_zero > 0,
+                       scales::percent(prop_zero, accuracy = 0.1),
+                       "")),
+    size = 3
+  ) +
+  scale_fill_viridis_c(
+    labels = scales::percent,
+    name   = "Percent\nzeros"
+  ) +
+  labs(
+    title = "Fraction of zero values by video and variable",
+    x = "Video file",
+    y = "Variable"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+library(tidyverse)
+
+# Select only likelihood columns
+likelihood_vars <- names(pose_all) %>% 
+  str_subset("likelihood$")
+
+# Compute fraction of frames with likelihood > 0.9
+high_conf_by_vid <- pose_all %>%
+  group_by(video_id) %>%
+  summarize(
+    across(all_of(likelihood_vars), 
+           ~ mean(. > 0.9, na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = -video_id,
+    names_to = "variable",
+    values_to = "prop_high"
+  )
+
+# Plot heatmap
+ggplot(high_conf_by_vid,
+       aes(x = video_id, y = variable, fill = prop_high)) +
+  geom_tile() +
+  geom_text(
+    aes(label = scales::percent(prop_high, accuracy = 0.1)),
+    size = 3
+  ) +
+  scale_fill_viridis_c(
+    labels = scales::percent,
+    name = "Likelihood > 0.9"
+  ) +
+  labs(
+    title = "Fraction of frames with likelihood > 0.9\nfor each body part and video",
+    x = "Video file",
+    y = "Body part"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```

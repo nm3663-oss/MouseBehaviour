@@ -1,1 +1,287 @@
 # Results
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(purrr)
+library(scales)
+
+```
+
+```{r}
+# Ensure required columns exist
+
+required_cols <- c("Nose_x","Nose_y","Tail_Base_x","Tail_Base_y")
+stopifnot(all(required_cols %in% names(pose_all)))
+
+pose_rel <- pose_all %>%
+mutate(
+origin_x = (Nose_x + Tail_Base_x) / 2,
+origin_y = (Nose_y + Tail_Base_y) / 2,
+body_len = sqrt((Nose_x - Tail_Base_x)^2 + (Nose_y - Tail_Base_y)^2),
+# avoid division by zero
+body_len_safe = if_else(body_len > 0, body_len, NA_real_)
+)
+
+```
+
+```{r}
+add_rel_coords <- function(df, part) {
+xcol <- paste0(part, "_x")
+ycol <- paste0(part, "_y")
+if (all(c(xcol, ycol) %in% names(df))) {
+df %>%
+mutate(
+!!paste0(part, "_rel_x") := (!!sym(xcol) - origin_x) / body_len_safe,
+!!paste0(part, "_rel_y") := (!!sym(ycol) - origin_y) / body_len_safe
+)
+} else {
+df
+}
+}
+
+parts <- c("Light", "Nose", "Tail_Base", "Tail_Tip", "HeadArea", "leftear", "rightear")
+
+for (p in parts) {
+pose_rel <- add_rel_coords(pose_rel, p)
+}
+
+names(pose_rel)
+
+```
+
+```{r}
+rel_cols <- grep("*rel*(x|y)$", names(pose_rel), value = TRUE)
+rel_cols
+features <- pose_rel %>%
+select(all_of(rel_cols)) %>%
+mutate(row_id = row_number()) %>%
+drop_na()
+
+n_samples <- nrow(features)
+n_samples
+
+```
+
+```{r}
+
+# Build feature matrix again (in case not in scope)
+rel_cols <- grep("_rel_(x|y)$", names(pose_rel), value = TRUE)
+
+features <- pose_rel %>%
+  select(all_of(rel_cols)) %>%
+  mutate(row_id = row_number()) %>%
+  drop_na()
+
+n_samples <- nrow(features)
+n_samples
+
+```
+
+```{r}
+if (n_samples < 5) {
+  stop("Not enough frames with valid relative coordinates to run k-means.")
+}
+
+k_requested <- 10  # your target number of clusters
+k_max <- min(k_requested, n_samples)
+
+set.seed(1)
+
+km <- NULL
+k_used <- NA_integer_
+
+# Try k = k_max, k_max-1, ..., 2 until k-means succeeds (no empty clusters)
+for (kc in seq(k_max, 2, by = -1)) {
+  km_try <- try(
+    kmeans(select(features, -row_id),
+           centers = kc,
+           nstart = 10),
+    silent = TRUE
+  )
+  if (!inherits(km_try, "try-error")) {
+    km <- km_try
+    k_used <- kc
+    break
+  }
+}
+
+if (is.null(km)) {
+  stop("Could not find a valid k-means solution (empty clusters) even after reducing k.")
+}
+
+k_used
+```
+
+```{r}
+# Assign cluster labels back to pose_rel
+pose_rel$cluster <- NA_integer_
+pose_rel$cluster[features$row_id] <- km$cluster
+pose_rel$cluster <- factor(pose_rel$cluster)
+
+```
+
+```{r}
+pca <- prcomp(select(features, -row_id), scale. = TRUE)
+
+df_pca <- as_tibble(pca$x[, 1:2]) %>%
+mutate(cluster = factor(km$cluster))
+
+ggplot(df_pca, aes(PC1, PC2, color = cluster)) +
+geom_point(alpha = 0.3, size = 0.7) +
+labs(
+title = "K-means clusters on relative posture (PCA view)",
+x = "PC1",
+y = "PC2",
+color = "Cluster"
+) +
+theme_minimal(base_size = 14)
+```
+
+```{r}
+cluster_frac <- pose_rel %>%
+filter(!is.na(cluster)) %>%
+group_by(video_id, cluster) %>%
+summarise(n_frames = n(), .groups = "drop") %>%
+group_by(video_id) %>%
+mutate(frac = n_frames / sum(n_frames))
+
+ggplot(cluster_frac,
+aes(x = video_id, y = frac, fill = cluster)) +
+geom_col() +
+geom_text(aes(label = scales::percent(frac, accuracy = 1)),
+position = position_stack(vjust = 0.5),
+size = 3) +
+scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+labs(
+title = "Fraction of frames in each posture cluster by video",
+x = "Video",
+y = "Percent of frames",
+fill = "Cluster"
+) +
+theme_minimal(base_size = 14) +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+
+# Use all relative coordinate columns as features
+rel_cols <- grep("_rel_(x|y)$", names(pose_rel), value = TRUE)
+
+features_mat <- pose_rel %>%
+  select(all_of(rel_cols)) %>%
+  drop_na()
+
+# Keep only rows that were clustered (cluster not NA)
+clust_mask <- !is.na(pose_rel$cluster)
+features_mat <- pose_rel[clust_mask, ] %>%
+  select(all_of(rel_cols)) %>%
+  drop_na()
+
+# PCA on scaled features
+pca <- prcomp(features_mat, scale. = TRUE)
+df_pca <- as_tibble(pca$x[, 1:2]) %>%
+  mutate(cluster = droplevels(pose_rel$cluster[clust_mask]))
+
+ggplot(df_pca, aes(PC1, PC2, color = cluster)) +
+  geom_point(alpha = 0.3, size = 0.7) +
+  labs(
+    title = "Posture clusters in PCA space",
+    x = "PC1 (relative posture combination)",
+    y = "PC2 (relative posture combination)",
+    color = "Cluster"
+  ) +
+  theme_minimal(base_size = 16)
+```
+
+```{r}
+library(scales)
+
+cluster_frac <- pose_rel %>%
+  filter(!is.na(cluster)) %>%
+  group_by(video_id, cluster) %>%
+  summarise(n_frames = n(), .groups = "drop") %>%
+  group_by(video_id) %>%
+  mutate(frac = n_frames / sum(n_frames))
+
+ggplot(cluster_frac,
+       aes(x = video_id, y = frac, fill = cluster)) +
+  geom_col() +
+  geom_text(aes(label = scales::percent(frac, accuracy = 1)),
+            position = position_stack(vjust = 0.5),
+            size = 3) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(
+    title = "Fraction of frames in each posture cluster by video",
+    x = "Video",
+    y = "Percent of frames",
+    fill = "Cluster"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+stopifnot("Nose_rel_y" %in% names(pose_rel))
+
+ggplot(pose_rel, aes(x = cluster, y = Nose_rel_y, fill = cluster)) +
+  geom_boxplot(outlier.alpha = 0.2) +
+  labs(
+    title = "Nose vertical position in body frame by cluster",
+    x = "Cluster",
+    y = "Nose relative y (body lengths)"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(legend.position = "none")
+```
+
+```{r}
+# Make sure these columns exist; adjust names if needed
+stopifnot(all(c("leftear_rel_x","leftear_rel_y",
+                "rightear_rel_x","rightear_rel_y") %in% names(pose_rel)))
+
+pose_rel <- pose_rel %>%
+  mutate(
+    ear_dist = sqrt((leftear_rel_x - rightear_rel_x)^2 +
+                    (leftear_rel_y - rightear_rel_y)^2)
+  )
+
+ggplot(pose_rel, aes(cluster, ear_dist, fill = cluster)) +
+  geom_boxplot(outlier.alpha = 0.2) +
+  labs(
+    title = "Ear distance in body frame by cluster",
+    x = "Cluster",
+    y = "Ear distance (body lengths)"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(legend.position = "none")
+
+```
+
+```{r}
+# Choose one video to illustrate
+example_vid <- unique(pose_rel$video_id)[1]
+
+df_example <- pose_rel %>%
+  filter(video_id == example_vid, !is.na(cluster)) %>%
+  arrange(frame)
+
+ggplot(df_example, aes(x = frame, y = 1, fill = cluster)) +
+  geom_tile() +
+  scale_y_continuous(breaks = NULL) +
+  labs(
+    title = paste("Sequence of posture clusters over time —", example_vid),
+    x = "Frame",
+    y = NULL,
+    fill = "Cluster"
+  ) +
+  theme_minimal(base_size = 16)
+
+```
+
+```{r}
+
+```
