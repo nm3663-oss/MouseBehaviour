@@ -2,286 +2,459 @@
 
 ```{r}
 library(tidyverse)
-library(ggplot2)
-library(dplyr)
-library(purrr)
-library(scales)
 
-```
-
-```{r}
-# Ensure required columns exist
-
-required_cols <- c("Nose_x","Nose_y","Tail_Base_x","Tail_Base_y")
-stopifnot(all(required_cols %in% names(pose_all)))
-
-pose_rel <- pose_all %>%
-mutate(
-origin_x = (Nose_x + Tail_Base_x) / 2,
-origin_y = (Nose_y + Tail_Base_y) / 2,
-body_len = sqrt((Nose_x - Tail_Base_x)^2 + (Nose_y - Tail_Base_y)^2),
-# avoid division by zero
-body_len_safe = if_else(body_len > 0, body_len, NA_real_)
-)
-
-```
-
-```{r}
-add_rel_coords <- function(df, part) {
-xcol <- paste0(part, "_x")
-ycol <- paste0(part, "_y")
-if (all(c(xcol, ycol) %in% names(df))) {
-df %>%
-mutate(
-!!paste0(part, "_rel_x") := (!!sym(xcol) - origin_x) / body_len_safe,
-!!paste0(part, "_rel_y") := (!!sym(ycol) - origin_y) / body_len_safe
-)
-} else {
-df
-}
+read_pose <- function(path) {
+  readr::read_csv(path, skip = 3, show_col_types = FALSE)
 }
 
-parts <- c("Light", "Nose", "Tail_Base", "Tail_Tip", "HeadArea", "leftear", "rightear")
+csv_files <- list.files("data", pattern = "\\.csv$", full.names = TRUE)
 
-for (p in parts) {
-pose_rel <- add_rel_coords(pose_rel, p)
-}
+video_info <- tibble(
+  file      = csv_files,
+  video_id  = basename(csv_files)
+) |>
+  mutate(
+    data      = map(file, read_pose),
+    n_frames  = map_int(data, nrow),
+    fps       = 30,
+    duration_s = n_frames / fps
+  ) |>
+  arrange(video_id)
 
-names(pose_rel)
-
-```
-
-```{r}
-rel_cols <- grep("*rel*(x|y)$", names(pose_rel), value = TRUE)
-rel_cols
-features <- pose_rel %>%
-select(all_of(rel_cols)) %>%
-mutate(row_id = row_number()) %>%
-drop_na()
-
-n_samples <- nrow(features)
-n_samples
+video_info
 
 ```
 
-```{r}
-
-# Build feature matrix again (in case not in scope)
-rel_cols <- grep("_rel_(x|y)$", names(pose_rel), value = TRUE)
-
-features <- pose_rel %>%
-  select(all_of(rel_cols)) %>%
-  mutate(row_id = row_number()) %>%
-  drop_na()
-
-n_samples <- nrow(features)
-n_samples
-
-```
+Before analyzing posture, I looked at how long each video was. All videos contained a similar number of frames, and their durations only differed by a few minutes. This means any behavioral differences are unlikely to come from recording length.
 
 ```{r}
-if (n_samples < 5) {
-  stop("Not enough frames with valid relative coordinates to run k-means.")
-}
-
-k_requested <- 10  # your target number of clusters
-k_max <- min(k_requested, n_samples)
-
-set.seed(1)
-
-km <- NULL
-k_used <- NA_integer_
-
-# Try k = k_max, k_max-1, ..., 2 until k-means succeeds (no empty clusters)
-for (kc in seq(k_max, 2, by = -1)) {
-  km_try <- try(
-    kmeans(select(features, -row_id),
-           centers = kc,
-           nstart = 10),
-    silent = TRUE
+ggplot(video_info, aes(x = video_id, y = n_frames)) +
+  geom_col(fill = "steelblue") +
+  labs(
+    title = "Number of frames in each video",
+    x = "Video file",
+    y = "Number of frames"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
   )
-  if (!inherits(km_try, "try-error")) {
-    km <- km_try
-    k_used <- kc
-    break
-  }
-}
-
-if (is.null(km)) {
-  stop("Could not find a valid k-means solution (empty clusters) even after reducing k.")
-}
-
-k_used
-```
-
-```{r}
-# Assign cluster labels back to pose_rel
-pose_rel$cluster <- NA_integer_
-pose_rel$cluster[features$row_id] <- km$cluster
-pose_rel$cluster <- factor(pose_rel$cluster)
 
 ```
 
 ```{r}
-pca <- prcomp(select(features, -row_id), scale. = TRUE)
-
-df_pca <- as_tibble(pca$x[, 1:2]) %>%
-mutate(cluster = factor(km$cluster))
-
-ggplot(df_pca, aes(PC1, PC2, color = cluster)) +
-geom_point(alpha = 0.3, size = 0.7) +
-labs(
-title = "K-means clusters on relative posture (PCA view)",
-x = "PC1",
-y = "PC2",
-color = "Cluster"
-) +
-theme_minimal(base_size = 14)
-```
-
-```{r}
-cluster_frac <- pose_rel %>%
-filter(!is.na(cluster)) %>%
-group_by(video_id, cluster) %>%
-summarise(n_frames = n(), .groups = "drop") %>%
-group_by(video_id) %>%
-mutate(frac = n_frames / sum(n_frames))
-
-ggplot(cluster_frac,
-aes(x = video_id, y = frac, fill = cluster)) +
-geom_col() +
-geom_text(aes(label = scales::percent(frac, accuracy = 1)),
-position = position_stack(vjust = 0.5),
-size = 3) +
-scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
-labs(
-title = "Fraction of frames in each posture cluster by video",
-x = "Video",
-y = "Percent of frames",
-fill = "Cluster"
-) +
-theme_minimal(base_size = 14) +
-theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggplot(video_info, aes(x = video_id, y = duration_s)) +
+  geom_col(fill = "steelblue") +
+  labs(
+    title = "Approximate duration of each video",
+    x = "Video file",
+    y = "Duration"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
 ```
 
 ```{r}
 library(tidyverse)
-library(ggplot2)
 
-# Use all relative coordinate columns as features
-rel_cols <- grep("_rel_(x|y)$", names(pose_rel), value = TRUE)
+read_pose_dlc <- function(path) {
+  raw <- read_csv(path, col_names = FALSE, show_col_types = FALSE)
 
-features_mat <- pose_rel %>%
-  select(all_of(rel_cols)) %>%
-  drop_na()
+  header  <- raw[1:3, ]
+  data    <- raw[-(1:3), ]
+  bodyparts <- as.character(header[2, ])
+  coords    <- as.character(header[3, ])
 
-# Keep only rows that were clustered (cluster not NA)
-clust_mask <- !is.na(pose_rel$cluster)
-features_mat <- pose_rel[clust_mask, ] %>%
-  select(all_of(rel_cols)) %>%
-  drop_na()
+  col_names <- paste(bodyparts, coords, sep = "_")
 
-# PCA on scaled features
-pca <- prcomp(features_mat, scale. = TRUE)
-df_pca <- as_tibble(pca$x[, 1:2]) %>%
-  mutate(cluster = droplevels(pose_rel$cluster[clust_mask]))
+  colnames(data) <- col_names
 
-ggplot(df_pca, aes(PC1, PC2, color = cluster)) +
-  geom_point(alpha = 0.3, size = 0.7) +
+  data <- data |>
+    mutate(across(everything(), as.numeric)) |>
+    mutate(video_id = basename(path), .before = 1)
+
+  data
+}
+
+```
+
+```{r}
+
+# Building video_info with DLC data and group labels
+video_info <- tibble(
+  file     = csv_files,
+  video_id = basename(csv_files)
+) |>
+  mutate(
+    data = map(file, read_pose_dlc),
+    n_frames = map_int(data, nrow),
+    fps      = 30,
+    duration_s = n_frames / fps,
+    # 7th and 8th videos are Experimental, others Control
+    group = if_else(row_number() %in% c(7, 8), "Experimental", "Control")
+  ) |>
+  arrange(video_id)
+
+video_info |> select(video_id, group, n_frames, duration_s)
+
+```
+
+```{r}
+#video_info <- video_info |>
+  #mutate(
+   # data = map(data, ~ .x %>% select(-video_id))
+  #)
+
+pose_all <- video_info |>
+  select(video_id, group, data) |>
+  unnest(cols = data)
+
+names(pose_all)
+
+```
+
+```{r}
+# Overall mean
+mean_all <- pose_all |>
+  summarise(
+    group3 = "All videos",
+    mean_x = mean(Nose_x, na.rm = TRUE),
+    mean_y = mean(Nose_y, na.rm = TRUE)
+  )
+
+# Control only
+mean_control <- pose_all |>
+  filter(group == "Control") |>
+  summarise(
+    group3 = "Control",
+    mean_x = mean(Nose_x, na.rm = TRUE),
+    mean_y = mean(Nose_y, na.rm = TRUE)
+  )
+
+# Experimental only
+mean_exp <- pose_all |>
+  filter(group == "Experimental") |>
+  summarise(
+    group3 = "Experimental",
+    mean_x = mean(Nose_x, na.rm = TRUE),
+    mean_y = mean(Nose_y, na.rm = TRUE)
+  )
+
+mean_positions <- bind_rows(mean_all, mean_control, mean_exp)
+mean_positions
+
+```
+
+```{r}
+ggplot() +
+  geom_point(
+    data = pose_all,
+    aes(x = Nose_x, y = Nose_y),
+    color = "grey80",
+    alpha = 0.05,
+    size = 0.3
+  ) +
+  geom_point(
+    data = mean_positions,
+    aes(x = mean_x, y = mean_y, color = group3),
+    size = 4
+  ) +
+  geom_text(
+    data = mean_positions,
+    aes(x = mean_x, y = mean_y, label = group3, color = group3),
+    nudge_y = 20,
+    show.legend = FALSE
+  ) +
   labs(
-    title = "Posture clusters in PCA space",
-    x = "PC1 (relative posture combination)",
-    y = "PC2 (relative posture combination)",
-    color = "Cluster"
+    title = "Mean nose position",
+    x = "Nose_x",
+    y = "Nose_y",
+    color = "Category"
+  ) +
+  theme_minimal(base_size = 16)
+
+```
+
+I began by comparing raw nose positions across all videos. When I plotted average nose location for: all mice combined, control mice only, and experimental mice only, all three points were almost on top of each other, near the center of the arena.
+
+```{r}
+ggplot(pose_all, aes(x = Nose_x, y = Nose_y)) +
+  geom_point(aes(color = group),
+             alpha = 0.05, size = 0.3) +
+  coord_equal() +
+  facet_wrap(~ group) +
+  labs(
+    title = "Posture distribution in camera coordinates",
+    x = "Nose_x",
+    y = "Nose_y",
+    color = "Group"
   ) +
   theme_minimal(base_size = 16)
 ```
 
+I then compared full posture clouds (all frames), showing where each mouse’s nose appeared in camera coordinates. Both control and experimental mice formed nearly identical “X-shaped” patterns. This shape comes from the geometry of the arena and the way mice move across it. In raw camera coordinates, experimental mice do not appear to explore the arena differently than controls. This suggests we should look deeper, at body-relative posture rather than position in space.
+
+# Relative posture and clustering
+
+To study posture itself, I converted body-part locations into a coordinate system relative to the mouse’s own head–body orientation. This removes the influence of where the mouse is in the arena and focuses on the shape and angles of the body. I then ran PCA for visualization and applied k-means clustering to group similar postures.
+
 ```{r}
+#install.packages("janitor")
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(janitor)
+
+pose_all <- pose_all |> clean_names()
+
+parts <- c("nose", "tail_base", "headarea", "leftear", "rightear", "light")
+available_parts <- parts[paste0(parts, "_x") %in% names(pose_all)]
+
+# Body midpoint and length
+pose_rel <- pose_all |>
+  mutate(
+    origin_x = (nose_x + tail_base_x) / 2,
+    origin_y = (nose_y + tail_base_y) / 2,
+    body_len = sqrt((nose_x - tail_base_x)^2 + (nose_y - tail_base_y)^2),
+    body_len_safe = if_else(body_len > 0, body_len, NA_real_)
+  )
+
+# Creating relative coordinates
+for (p in available_parts) {
+  pose_rel[[paste0(p, "_rel_x")]] <- (pose_rel[[paste0(p, "_x")]] - pose_rel$origin_x) / pose_rel$body_len_safe
+  pose_rel[[paste0(p, "_rel_y")]] <- (pose_rel[[paste0(p, "_y")]] - pose_rel$origin_y) / pose_rel$body_len_safe
+}
+
+pose_rel <- pose_rel |> filter(!is.na(nose_rel_x))
+```
+
+```{r}
+
+rel_cols <- grep("_rel_", names(pose_rel), value = TRUE)
+
+X <- pose_rel |> select(all_of(rel_cols)) |> as.matrix()
+
+```
+
+```{r}
+
+set.seed(42)
+
+km <- kmeans(X, centers = 10, nstart = 20)
+
+pose_rel$cluster <- factor(km$cluster)
+
+```
+
+```{r}
+
+pca <- prcomp(X, scale. = TRUE)
+pca_df <- data.frame(
+  PC1 = pca$x[,1],
+  PC2 = pca$x[,2],
+  cluster = pose_rel$cluster
+)
+
+ggplot(pca_df, aes(PC1, PC2, color = cluster)) +
+  geom_point(alpha = 0.3, size = 0.7) +
+  labs(title = "K-means clusters on relative posture (PCA view)") +
+  theme_minimal(base_size = 16)
+
+```
+
+The PCA scatterplot shows that some clusters are tight and well-separated, while others are more spread out. This means: certain postures are very consistent, other postures act more like transitions between main states. The PCA plot also confirms that relative posture reveals structure that is completely invisible in raw camera coordinates.
+
+```{r}
+
+cluster_fraction <- pose_rel |>
+  group_by(video_id, cluster) |>
+  summarise(n = n()) |>
+  group_by(video_id) |>
+  mutate(p = n / sum(n))
+
+ggplot(cluster_fraction,
+       aes(x = video_id, y = p, fill = cluster)) +
+  geom_col() +
+  geom_text(aes(label = scales::percent(p, accuracy = 1)),
+            position = position_stack(vjust = 0.5), size = 3) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Fraction of frames in each posture cluster by video",
+       x = "Video", y = "Percent of frames") +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+The stacked bar charts show that:all videos contain all posture clusters, but the proportion of each cluster varies somewhat from mouse to mouse. Importantly, the experimental mice do not show any cluster that is completely absent in controls. Instead, they may differ in how much time they spend in certain states.
+
+```{r}
+ggplot(pose_rel, aes(x = cluster, y = nose_rel_y, fill = cluster)) +
+  geom_boxplot(outlier.size = 0.5) +
+  labs(title = "Nose vertical position by cluster",
+       y = "Nose_rel_y (body lengths)") +
+  theme_minimal(base_size = 16)
+
+```
+
+To better understand the meaning of each cluster, I plotted the relative vertical nose position for every cluster. Clusters clearly separate into:head-up postures (higher nose values), head-down postures (lower nose values), and mid-level postures. This interpretation is helpful because it translates the clusters into something biologically meaningful.
+
+```{r}
+pose_rel <- pose_rel |>
+  group_by(video_id) |>
+  arrange(video_id) |>
+  mutate(frame = row_number()) |>
+  ungroup()
+
+pose_rel$cluster <- as.factor(pose_rel$cluster)
+
+video_to_plot <- unique(pose_rel$video_id)[1]
+
+v1 <- pose_rel |>
+  filter(video_id == video_to_plot)
+
+ggplot(v1, aes(x = frame, y = 1, fill = cluster)) +
+  geom_tile() +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(
+    title = paste("Sequence of posture clusters over time", video_to_plot),
+    x = "Frame",
+    y = "",
+    fill = "Cluster"
+  ) +
+  theme_minimal(base_size = 18) +
+  theme(
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+
+```
+
+Visualizing the cluster sequence over time shows that mice switch posture very frequently. This is expected for freely moving animals exploring a new environment.
+
+```{r}
+library(dplyr)
+library(ggplot2)
 library(scales)
 
-cluster_frac <- pose_rel %>%
-  filter(!is.na(cluster)) %>%
-  group_by(video_id, cluster) %>%
-  summarise(n_frames = n(), .groups = "drop") %>%
-  group_by(video_id) %>%
-  mutate(frac = n_frames / sum(n_frames))
+# Fraction of frames in each cluster, by group
+cluster_fraction_group <- pose_rel |>
+  group_by(group, cluster) |>
+  summarise(n = n(), .groups = "drop_last") |>
+  mutate(p = n / sum(n)) |>
+  ungroup()
 
-ggplot(cluster_frac,
-       aes(x = video_id, y = frac, fill = cluster)) +
+cluster_fraction_group
+
+ggplot(cluster_fraction_group,
+       aes(x = group, y = p, fill = cluster)) +
   geom_col() +
-  geom_text(aes(label = scales::percent(frac, accuracy = 1)),
+  geom_text(aes(label = percent(p, accuracy = 1)),
             position = position_stack(vjust = 0.5),
-            size = 3) +
-  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+            size = 4) +
+  scale_y_continuous(labels = percent_format()) +
   labs(
-    title = "Fraction of frames in each posture cluster by video",
-    x = "Video",
+    title = "Fraction of frames in each posture cluster",
+    x = "Group",
     y = "Percent of frames",
     fill = "Cluster"
   ) +
-  theme_minimal(base_size = 16) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  theme_minimal(base_size = 16)
+
 ```
 
-```{r}
-stopifnot("Nose_rel_y" %in% names(pose_rel))
+This plot summarizes how often each posture cluster appears in the two groups. Noticeable differences appear in several clusters: Cluster 3 and 7 occur slightly more often in the Experimental group.Cluster 4 and 9 occur more often in Control mice. These small but consistent shifts suggest that stressed mice may bias toward certain posture states.
 
-ggplot(pose_rel, aes(x = cluster, y = Nose_rel_y, fill = cluster)) +
-  geom_boxplot(outlier.alpha = 0.2) +
+```{r}
+cluster_diff <- cluster_fraction_group |>
+  select(group, cluster, p) |>
+  tidyr::pivot_wider(names_from = group, values_from = p) |>
+  mutate(diff_exp_minus_ctrl = Experimental - Control)
+
+ggplot(cluster_diff,
+       aes(x = cluster, y = diff_exp_minus_ctrl, fill = diff_exp_minus_ctrl > 0)) +
+  geom_col() +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_fill_manual(values = c("TRUE" = "tomato", "FALSE" = "steelblue"),
+                    labels = c("FALSE" = "More in Control",
+                               "TRUE"  = "More in Experimental"),
+                    name = "") +
   labs(
-    title = "Nose vertical position in body frame by cluster",
+    title = "Difference in cluster usage",
     x = "Cluster",
-    y = "Nose relative y (body lengths)"
-  ) +
-  theme_minimal(base_size = 16) +
-  theme(legend.position = "none")
-```
-
-```{r}
-# Make sure these columns exist; adjust names if needed
-stopifnot(all(c("leftear_rel_x","leftear_rel_y",
-                "rightear_rel_x","rightear_rel_y") %in% names(pose_rel)))
-
-pose_rel <- pose_rel %>%
-  mutate(
-    ear_dist = sqrt((leftear_rel_x - rightear_rel_x)^2 +
-                    (leftear_rel_y - rightear_rel_y)^2)
-  )
-
-ggplot(pose_rel, aes(cluster, ear_dist, fill = cluster)) +
-  geom_boxplot(outlier.alpha = 0.2) +
-  labs(
-    title = "Ear distance in body frame by cluster",
-    x = "Cluster",
-    y = "Ear distance (body lengths)"
-  ) +
-  theme_minimal(base_size = 16) +
-  theme(legend.position = "none")
-
-```
-
-```{r}
-# Choose one video to illustrate
-example_vid <- unique(pose_rel$video_id)[1]
-
-df_example <- pose_rel %>%
-  filter(video_id == example_vid, !is.na(cluster)) %>%
-  arrange(frame)
-
-ggplot(df_example, aes(x = frame, y = 1, fill = cluster)) +
-  geom_tile() +
-  scale_y_continuous(breaks = NULL) +
-  labs(
-    title = paste("Sequence of posture clusters over time —", example_vid),
-    x = "Frame",
-    y = NULL,
-    fill = "Cluster"
+    y = "Difference in percent of frames"
   ) +
   theme_minimal(base_size = 16)
 
 ```
 
+This graph makes the group differences easier to interpret by showing the percent-difference directly.
+
 ```{r}
+library(dplyr)
+library(tidyr)
+
+# All successive transitions within each video
+transitions <- pose_rel |>
+  arrange(video_id, frame) |>
+  group_by(video_id) |>
+  mutate(cluster_next = dplyr::lead(cluster)) |>
+  ungroup() |>
+  filter(!is.na(cluster_next))
+
+# Count transitions by group
+trans_mat_group <- transitions |>
+  group_by(group, cluster, cluster_next) |>
+  summarise(n = n(), .groups = "drop_last") |>
+  mutate(p = n / sum(n)) |> 
+  ungroup()
+
+# Heatmap for each group
+ggplot(trans_mat_group,
+       aes(x = cluster, y = cluster_next, fill = p)) +
+  geom_tile() +
+  facet_wrap(~ group) +
+  scale_fill_gradient(low = "white", high = "darkred",
+                      labels = percent_format(accuracy = 1)) +
+  labs(
+    title = "Transition probabilities between posture clusters",
+    x = "From cluster",
+    y = "To cluster",
+    fill = "Probability"
+  ) +
+  theme_minimal(base_size = 14)
 
 ```
+
+When I looked at how mice move from one posture cluster to another, both groups mostly stayed in the same posture from frame to frame, which is expected. But I did notice one small difference: the Experimental mice shifted into cluster 3 a bit more often, while the Control mice tended to move into clusters 4 and 9 more frequently. So even though the overall transition patterns look similar, the stressed mice seem to favor slightly different movement patterns.
+
+```{r}
+rle_dwell <- pose_rel |>
+  arrange(video_id, frame) |>
+  group_by(video_id) |>
+  do({
+    cl  <- .$cluster
+    gr  <- .$group[1]
+    r   <- rle(as.character(cl))
+    tibble(
+      group     = gr,
+      cluster   = factor(r$values, levels = levels(.$cluster)),
+      dwell_len = r$lengths / 30
+    )
+  }) |>
+  ungroup()
+
+ggplot(rle_dwell,
+       aes(x = cluster, y = dwell_len, fill = group)) +
+  geom_boxplot(outlier.size = 0.4, position = position_dodge(width = 0.7)) +
+  labs(
+    title = "Dwell time in each posture cluster",
+    x = "Cluster",
+    y = "Dwell time (seconds)",
+    fill = "Group"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+I also checked how long mice stay in each posture before switching. Most postures were held only briefly, but the Experimental mice tended to remain in clusters 3 and 7 a bit longer, and spent less time in clusters that look more like typical locomotion. This again hints that stress may change how mice behave moment-to-moment.
