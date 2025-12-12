@@ -108,7 +108,7 @@ video_info |> select(video_id, group, n_frames, duration_s)
   #)
 
 pose_all <- video_info |>
-  select(video_id, group, data) |>
+  select(group, data) |>
   unnest(cols = data)
 
 names(pose_all)
@@ -458,7 +458,3 @@ ggplot(rle_dwell,
 ```
 
 I also checked how long mice stay in each posture before switching. Most postures were held only briefly, but the Experimental mice tended to remain in clusters 3 and 7 a bit longer, and spent less time in clusters that look more like typical locomotion. This again hints that stress may change how mice behave moment-to-moment.
-
-## Conclusion
-
-Overall, this exploration showed that although Control and Experimental mice share the same general set of posture clusters, they use them in slightly different ways - Experimental mice spend more time in certain clusters and transition into them more often, which may reflect early behavioral changes related to stress. At the same time, our analysis has some limitations: we worked with a relatively small number of videos, relied on unsupervised clustering, and did not yet validate these posture groups with expert behavioral labels. In the future, I would like to incorporate more videos, try alternative embedding methods like UMAP or CEBRA, and compare our clusters to real behavioral categories such as grooming or rearing. Through this project, I learned how powerful pose-tracking data can be, but also how careful we need to be when interpreting subtle differences, especially when working with small datasets and unsupervised methods.
