@@ -2,11 +2,6 @@
 editor: 
   markdown: 
     wrap: 72
-execute:
-  echo: false
-  results: hide
-  message: false
-  warning: false
 ---
 
 # Data
